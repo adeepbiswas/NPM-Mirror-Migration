@@ -98,7 +98,7 @@ services:
     networks:
       - npm-network
 
-  npm-mirror:
+  npm-migration:
     image: npm-mirror
     hostname: npm-mirror
     depends_on:
@@ -107,8 +107,8 @@ services:
       - couchserver
     networks:
       - npm-network
-    ports:
-      - 8084:8084
+    # ports:
+    #   - 8084:8084
     volumes:
       - ../../../../../../NPM/npm-packages:/npm-mirror/npm-packages
       # - ../packages:/npm-mirror/packages
