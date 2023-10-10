@@ -29,7 +29,11 @@ print("Trying to connect to kafka.")
 # fs = ac.create_topics([topic1, topic2, topic3])
 
 # # Initialize Kafka producer
-# kafka_producer = Producer({"bootstrap.servers": "broker-npm:9092"})
+# config = {
+#     "bootstrap.servers": "broker-npm:9092",
+#     "compression.type": "gzip",  
+# }
+# kafka_producer = Producer(config)
 
 def process_package_dir(subdir, package_name):
     for file_name in os.listdir(subdir):
