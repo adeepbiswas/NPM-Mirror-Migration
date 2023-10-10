@@ -31,10 +31,48 @@ print("Trying to connect to kafka.")
 # # Initialize Kafka producer
 # kafka_producer = Producer({"bootstrap.servers": "broker-npm:9092"})
 
-def process_package_dir(subdir):
+def process_package_dir(subdir, package_name):
     for file_name in os.listdir(subdir):
         if file_name.endswith('.json'):
+            json_file_path = os.path.join(subdir, file_name)
+            print("JSON file path - ", json_file_path)
             
+            tgz_file_path = None
+            
+            with open(json_file_path) as json_file: ###
+                change = json.load(json_file)
+                
+            # finding corresponding tarball path
+            if 'doc' in change.keys(): ###
+                package_version = change['doc']['dist-tags']['latest']
+                tgz_file_name = f'{package_name}-{package_version}.tgz'
+                tgz_file_path = os.path.join(subdir, tgz_file_name)
+            
+            change['old_tgz_file_path'] = tgz_file_path
+            
+            # send data to kafka topic
+            try:
+                kafka_producer.produce("mig-npm-changes", value=line)
+                kafka_producer.flush()
+                print("Change sent to Kafka stream")
+                
+                # Delete the JSON file after successfully producing data to Kafka
+                os.remove(json_file_path)
+                
+            except Exception as e:
+                if "Message size too large" in str(e) or \
+                "MSG_SIZE_TOO_LARGE" in str(e):
+                    log_message = f"Seq ID - {change['seq']} - Message size too large. Unable to produce message."
+                    print(log_message)
+                    kafka_producer.produce("mig-run_logs", value=log_message)
+                else:
+                    log_message = f"Seq ID - {change['seq']} - Error:{e}, change skipped."
+                    print(log_message)
+                    kafka_producer.produce("mig-run_logs", value=log_message)
+                kafka_producer.produce("mig-skipped_changes", value=str(change['seq']))
+                
+                # Delete the JSON file after processing json file
+                os.remove(json_file_path)
 
 def traverse_npm_mirror():
     obj = os.scandir(npm_mirror_path)
@@ -43,7 +81,7 @@ def traverse_npm_mirror():
         if entry.is_dir(): # or entry.is_file():
             subdir = os.path.join(npm_mirror_path, entry.name)
             print("Processing package - ", subdir)
-            process_package_dir(subdir)
+            process_package_dir(subdir, entry.name) #add error handling
             
     obj.close()
     
