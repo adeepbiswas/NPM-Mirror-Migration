@@ -12,6 +12,7 @@ import concurrent.futures
 from prometheus_client import start_http_server, Summary, Counter, Gauge
 from confluent_kafka import Consumer, Producer, KafkaError
 from confluent_kafka.admin import AdminClient, NewTopic
+from tqdm import tqdm
 
 KAFKA_TOPIC_NUM_PARTITIONS = 12
 KAFKA_TOPIC_REPLICATION_FACTOR = 1
@@ -79,15 +80,22 @@ def process_package_dir(subdir, package_name):
                 os.remove(json_file_path)
 
 def traverse_npm_mirror():
-    obj = os.scandir(npm_mirror_path)
+    # obj = os.scandir(npm_mirror_path)
 
-    for entry in obj :
-        if entry.is_dir(): # or entry.is_file():
-            subdir = os.path.join(npm_mirror_path, entry.name)
-            print("Processing package - ", subdir)
-            process_package_dir(subdir, entry.name) #add error handling
+    # for i, entry in enumerate(obj) :
+    #     if entry.is_dir(): # or entry.is_file():
+    #         subdir = os.path.join(npm_mirror_path, entry.name)
+    #         print("Processing package - ", subdir)
+    #         process_package_dir(subdir, entry.name) #add error handling
             
-    obj.close()
+    # obj.close()
+    
+    with os.scandir(npm_mirror_path) as obj:
+        for i, entry in enumerate(tqdm(obj, desc="Processing packages")):
+            if entry.is_dir():
+                subdir = os.path.join(npm_mirror_path, entry.name)
+                print("Processing package - ", subdir)
+                process_package_dir(subdir, entry.name)  # Add error handling if needed
     
 if __name__ == '__main__':
     traverse_npm_mirror()
