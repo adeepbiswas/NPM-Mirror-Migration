@@ -31,7 +31,7 @@ COPY .env .
 COPY ./app ./app
 
 # Copy the rest of the application code into the container
-COPY ./dbdata ./dbdata
+# COPY ./dbdata ./dbdata
 
 # # Copy the rest of the application code into the container
 # COPY ./node_app ./node_app
