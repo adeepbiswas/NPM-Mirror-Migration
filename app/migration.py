@@ -19,10 +19,10 @@ import shutil
 MAX_SIZE = 10e+6
 SUBDIRECTORY_HASH_LENGTH = 3
 OLD_PACKAGE_VERSIONS_LIMIT = 5 #determines max how many package versions to keep
-# REMOTE_PACKAGE_DIR = '../../../../../../NPM/npm-packages'
-npm_mirror_path = './toy-data'
-REMOTE_PACKAGE_DIR = 'npm-packages'
-# npm_mirror_path = '../../../../../../NPM/npm-repository-mirror'
+REMOTE_PACKAGE_DIR = '../../../../../../NPM/npm-packages'
+# npm_mirror_path = './toy-data'
+# REMOTE_PACKAGE_DIR = 'npm-packages'
+npm_mirror_path = '../../../../../../NPM/npm-repository-mirror'
 DATABASE_NAME = 'try-1'
 
 # Specify the path to the .env file in the main directory
@@ -132,7 +132,7 @@ def extract_relative_path(full_path):
 
 def log_deletions(deleted_zip_path):
     deleted_zip_path = extract_relative_path(deleted_zip_path)
-    filename = "deleted_zips.txt"
+    filename = "../../../../../../NPM/deleted_zips.txt"
     try:
         # Open the file in append mode, creating it if it doesn't exist
         with open(filename, 'a') as file:
@@ -306,7 +306,7 @@ def process_package_dir(subdir, package_name):
                     process_change(change, tgz_file_path, json_file_path)
             except Exception as e:
                 os.remove(json_file_path)
-                print(f"An error occurred while processing '{json_file_pathpath}': {e}")
+                print(f"An error occurred while processing '{json_file_path}': {e}")
                 
     delete_directory(subdir)
                 
