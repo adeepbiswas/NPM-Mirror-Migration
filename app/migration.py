@@ -14,12 +14,16 @@ from confluent_kafka import Consumer, Producer, KafkaError
 from confluent_kafka.admin import AdminClient, NewTopic
 from tqdm import tqdm
 from dotenv import load_dotenv
+import shutil
 
-KAFKA_TOPIC_NUM_PARTITIONS = 12
-KAFKA_TOPIC_REPLICATION_FACTOR = 1
+MAX_SIZE = 10e+6
+SUBDIRECTORY_HASH_LENGTH = 3
+OLD_PACKAGE_VERSIONS_LIMIT = 5 #determines max how many package versions to keep
+# REMOTE_PACKAGE_DIR = '../../../../../../NPM/npm-packages'
 npm_mirror_path = './toy-data'
+REMOTE_PACKAGE_DIR = 'npm-packages'
 # npm_mirror_path = '../../../../../../NPM/npm-repository-mirror'
-DATABASE_NAME = 'npm-mirror'
+DATABASE_NAME = 'try-1'
 
 # Specify the path to the .env file in the main directory
 dotenv_path = '.env'
@@ -29,6 +33,7 @@ load_dotenv(dotenv_path)
 # Access the variables
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
+db = None
 
 # Establish Couchdb server connection
 server = couchdb.Server('http://{user}:{password}@localhost:5984/'.format(user=DB_USER, password=DB_PASSWORD))
@@ -50,8 +55,8 @@ def create_directory_structure(package_name):
     #Create parent directory in local and remote storage system
     if not os.path.exists(REMOTE_PACKAGE_DIR):
         os.mkdir(REMOTE_PACKAGE_DIR)
-    if not os.path.exists(LOCAL_PACKAGE_DIR):
-        os.mkdir(LOCAL_PACKAGE_DIR)
+    # if not os.path.exists(LOCAL_PACKAGE_DIR):
+    #     os.mkdir(LOCAL_PACKAGE_DIR)
 
     # Create subdirectories based on first 3 characters of the package name to add heirarchy
     if len(package_name) >= SUBDIRECTORY_HASH_LENGTH:
@@ -79,75 +84,62 @@ def create_directory_structure(package_name):
     return package_dir
 
 # Function to download package JSON and tarball corresponding to each change
-def download_document_and_package(change, package_name):
-    doc = change.get('doc')
-    if doc:
-        # creating directory in local storage for temporary downlaod and compression 
-        # before moving to remote directory (for faster transfers)
-        package_dir = LOCAL_PACKAGE_DIR
-        if not os.path.exists(LOCAL_PACKAGE_DIR):
-            os.mkdir(LOCAL_PACKAGE_DIR)
-        
-        saved = True
+def size_filter_document_and_package(change, package_name, doc_path, tarball_path):
+    saved = True
+    if os.path.getsize(doc_path) > MAX_SIZE:
+        os.remove(doc_path)
+        log_message = f"Package JSON too large, removed" # - {change['seq']}"
+        print(log_message)
+        saved = False
+        doc_path = None
 
-        # Save the document as a JSON file in temporary local directory
-        doc_filename = f"{package_name}_doc.json"
-        doc_path = os.path.join(package_dir, doc_filename)
-        
-        with open(doc_path, 'w') as doc_file:
-            json.dump(doc, doc_file)
-            log_message = f"Saved package JSON - {change['seq']}"
-            print(log_message)  
-        if os.path.getsize(doc_path) > MAX_SIZE:
-            os.remove(doc_path)
-            log_message = f"Package JSON too large, removed - {change['seq']}"
+    # Saving the tarball only if the JSON was saved
+    if saved and os.path.exists(tarball_path):
+        if os.path.getsize(tarball_path) > MAX_SIZE:
+            os.remove(tarball_path)
+            log_message = f"Tarball too large, removed" # - {change['seq']}"
             print(log_message)
-            saved = False
-            doc_path = None
-
-        # Saving the tarball only if the JSON was saved
-        if saved:
-            # Save the updated (latest) package as a tar file in temporary local directory
-            latest = doc['dist-tags']['latest']
-            tarball_url = doc['versions'][latest]['dist']['tarball']
-            tarball_filename = f"{package_name}_package.tgz"
-            tarball_path = os.path.join(package_dir, tarball_filename)
-            
-            response = requests.get(tarball_url)
-            if response.status_code == 200:
-                with open(tarball_path, 'wb') as tarball_file:
-                    tarball_file.write(response.content)
-                log_message = f"Saved Tar file - {change['seq']}"
+            if doc_path:
+                os.remove(doc_path)
+                log_message = f"Corresponding JSON removed as well" # - {change['seq']}"
                 print(log_message)
-                
-                if os.path.getsize(tarball_path) > MAX_SIZE:
-                    os.remove(tarball_path)
-                    log_message = f"Tarball too large, removed - {change['seq']}"
-                    print(log_message)
-                    kafka_producer.produce("run_logs", value=log_message)
-                    kafka_producer.flush()
-                    if doc_path:
-                        os.remove(doc_path)
-                        log_message = f"Corresponding JSON removed as well - {change['seq']}"
-                        print(log_message)
-                        doc_path = None
-                    saved = False
-                    tarball_path = None
-            else:
-                if doc_path:
-                    os.remove(doc_path)
-                    log_message = f"Corresponding JSON removed as well - {change['seq']}"
-                    print(log_message)
-                    doc_path = None
-                saved = False
-                tarball_path = None    
-            return doc_path, tarball_path
+                doc_path = None
+            saved = False
+            tarball_path = None
+            
+        return doc_path, tarball_path
+    
+    os.remove(doc_path)
+    print("json too big or tar file doesn't exist")
     return None, None
 
 def get_zip_creation_time(zip_filename):
     # Get the creation time of the zip file
     zip_creation_time = os.path.getctime(zip_filename)
     return zip_creation_time
+
+def extract_relative_path(full_path):
+    # Split the full path into parts using the directory separator (e.g., / or \)
+    path_parts = full_path.split(os.path.sep)
+
+    # Find the index of the "npm-packages" directory
+    npm_packages_index = path_parts.index("npm-packages")
+
+    # Extract the path from "npm-packages" to the end
+    relative_path = os.path.join(*path_parts[npm_packages_index:])
+
+    return relative_path
+
+def log_deletions(deleted_zip_path):
+    deleted_zip_path = extract_relative_path(deleted_zip_path)
+    filename = "deleted_zips.txt"
+    try:
+        # Open the file in append mode, creating it if it doesn't exist
+        with open(filename, 'a') as file:
+            # Write the data to the file followed by a newline character
+            file.write(str(deleted_zip_path) + '\n')
+    except Exception as e:
+        print(f"An error occurred while writing to the file: {e}")
 
 # deletes the oldest zip version if there are already 3 or more versions present unless
 # the next zip has a deletion type change
@@ -168,6 +160,7 @@ def delete_oldest_zip(directory):
             # Check if the next zip file has 'Deletion' in its name
             if not re.search(r'Deleted', next_zip_file, re.IGNORECASE):
                 oldest_zip_path = os.path.join(directory, zip_file)
+                log_deletions(oldest_zip_path)
                 os.remove(oldest_zip_path)
                 log_message = f"Too many package versions, Deleted the oldest zip file: {zip_file}"
                 print(log_message)
@@ -179,8 +172,8 @@ def compress_files(raw_package_name, package_name, revision_id, doc_path, tarbal
     
     # delete older package versions only if the difference in version count and modification count is 2
     # implying no older package versions were removed from the json
-    package_versions_count = len(change['doc']['versions'].keys())
-    package_modification_count = len(change['doc']['time'].keys())
+    package_versions_count = len(change['versions'].keys())
+    package_modification_count = len(change['time'].keys())
     if (package_modification_count - package_versions_count ) == 2:
         delete_oldest_zip(package_dir)
     
@@ -199,42 +192,49 @@ def compress_files(raw_package_name, package_name, revision_id, doc_path, tarbal
     with zipfile.ZipFile(zip_path, 'w') as zip_file:
         if doc_path:
             zip_file.write(doc_path, os.path.basename(doc_path))
-            os.remove(doc_path)  # Remove the individual JSON file from local (temp) directory after compression
         if tarball_path:
             zip_file.write(tarball_path, os.path.basename(tarball_path))
-            os.remove(tarball_path)  # Remove the individual tar file from local (temp) directory after compression
-    log_message = f"Compressed zip saved in remote - {change['seq']}"
+            os.remove(tarball_path)  # Remove the individual tar file from old directory after compression
+            
+    # modify zip creation time
+    os.utime(zip_path, (os.path.getmtime(doc_path), os.path.getmtime(doc_path)))
+    os.remove(doc_path)  # Remove the individual JSON file from old directory after compression
+
+    
+    log_message = f"Compressed zip saved in remote" # - {change['seq']}"
     print(log_message)
     
     return zip_path
 
 # Function to save the processed change details in our own database
-def store_change_details(change, db, zip_path):
+def store_change_details(change, zip_path):
     # Store the important details regarding the change in the local CouchDB database.
-    package_name = change['id']
-    change_seq_id = change['seq']
-    package_revision_id = change['doc']['_rev']
-    package_latest_version = change['doc']['dist-tags']['latest']
-    package_versions_count = len(change['doc']['versions'].keys())
+    package_name = change['_id']
+    change_seq_id = None #change['seq']
+    package_revision_id = change['_rev']
+    package_latest_version = change['dist-tags']['latest']
+    package_versions_count = len(change['versions'].keys())
     
     package_latest_authors = None
     package_latest_maintainers = None
     package_latest_dependencies = None
-    if 'author' in change['doc']['versions'][package_latest_version].keys():
-        package_latest_authors = change['doc']['versions'][package_latest_version]['author']
-    if 'maintainers' in change['doc']['versions'][package_latest_version].keys():
-        package_latest_maintainers = change['doc']['versions'][package_latest_version]['maintainers']
-    if 'dependencies' in change['doc']['versions'][package_latest_version].keys():
-        package_latest_dependencies = change['doc']['versions'][package_latest_version]['dependencies']
+    if 'author' in change['versions'][package_latest_version].keys():
+        package_latest_authors = change['versions'][package_latest_version]['author']
+    if 'maintainers' in change['versions'][package_latest_version].keys():
+        package_latest_maintainers = change['versions'][package_latest_version]['maintainers']
+    if 'dependencies' in change['versions'][package_latest_version].keys():
+        package_latest_dependencies = change['versions'][package_latest_version]['dependencies']
     
-    package_modification_count = len(change['doc']['time'].keys())
-    package_latest_change_time = change['doc']['time'][package_latest_version]
-    package_distribution_tags = change['doc']['dist-tags']
+    package_modification_count = len(change['time'].keys())
+    package_latest_change_time = change['time'][package_latest_version]
+    package_distribution_tags = change['dist-tags']
     
     package_deleted = False
     change_keys = list(change.keys())
     if 'deleted' in change_keys:
         package_deleted = change['deleted']
+        
+    zip_path = extract_relative_path(zip_path)
     
     data = {
         'package_name': package_name, 
@@ -252,30 +252,64 @@ def store_change_details(change, db, zip_path):
         'package_distribution_tags': package_distribution_tags
     }
     db.save(data)
-    log_message = f"Change record added to database - {change['seq']}"
+    log_message = f"Change record added to database" # - {change['seq']}"
     print(log_message)
+    
+def process_change(change, tgz_file_path, json_file_path):
+    raw_package_name = change['_id']
+    
+    log_message = f"Raw package name: {raw_package_name}"
+    print(log_message)
+    
+    if "/" in raw_package_name:
+        segments = raw_package_name.split("/")
+        package_name = segments[-1]
+    else:
+        package_name = raw_package_name
+    
+    doc_path, tarball_path = size_filter_document_and_package(change, package_name, json_file_path, tgz_file_path)
+    print("doc path - ", doc_path)
+    
+    if doc_path:
+        zip_path = compress_files(raw_package_name, package_name, change['_rev'], doc_path, tarball_path, change)
+        store_change_details(change, zip_path)
+
+def delete_directory(path):
+    try:
+        shutil.rmtree(path)
+        print(f"Directory '{path}' and its contents have been deleted.")
+    except Exception as e:
+        print(f"An error occurred while deleting '{path}': {e}")
 
 def process_package_dir(subdir, package_name):
     for file_name in os.listdir(subdir):
         if file_name.endswith('.json'):
             json_file_path = os.path.join(subdir, file_name)
-            # print("JSON file path - ", json_file_path)
-            
-            tgz_file_path = None
-            
-            with open(json_file_path) as json_file: ###
-                change = json.load(json_file)
+            try:
+                print("JSON file path - ", json_file_path)
                 
-            # finding corresponding tarball path
-            if 'doc' in change.keys(): ###
-                package_version = change['doc']['dist-tags']['latest']
-                tgz_file_name = f'{package_name}-{package_version}.tgz'
-                tgz_file_path = os.path.join(subdir, tgz_file_name)
-            
-            change['old_tgz_file_path'] = tgz_file_path
+                tgz_file_path = None
                 
-            # Delete the JSON file after processing json file
-            # os.remove(json_file_path)
+                with open(json_file_path) as json_file: 
+                    change = json.load(json_file)
+                    
+                # finding corresponding tarball path
+                # print("keys-", change)
+                # break
+                if '_id' in change.keys(): ###
+                    print("hello")
+                    
+                    package_version = change['dist-tags']['latest']
+                    tgz_file_name = f'{package_name}-{package_version}.tgz'
+                    tgz_file_path = os.path.join(subdir, tgz_file_name)
+                    
+                    process_change(change, tgz_file_path, json_file_path)
+            except Exception as e:
+                os.remove(json_file_path)
+                print(f"An error occurred while processing '{json_file_pathpath}': {e}")
+                
+    delete_directory(subdir)
+                
 
 def traverse_npm_mirror():
     
@@ -289,8 +323,6 @@ def traverse_npm_mirror():
             
     # obj.close()
     
-    db = create_or_connect_db(server, DATABASE_NAME)
-    
     with os.scandir(npm_mirror_path) as obj:
         for i, entry in enumerate(tqdm(obj, desc="Processing packages")):
             if entry.is_dir():
@@ -299,4 +331,5 @@ def traverse_npm_mirror():
                 process_package_dir(subdir, entry.name)  # Add error handling if needed
     
 if __name__ == '__main__':
+    db = create_or_connect_db(server, DATABASE_NAME)
     traverse_npm_mirror()
